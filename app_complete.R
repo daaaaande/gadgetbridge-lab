@@ -79,6 +79,14 @@ APP_CSS <- "
   .rgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 12px; flex: 1; min-width: 260px; }
   .rcell { text-align: center; font-size: .78rem; opacity: .95; }
   .arcs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; justify-items: center; padding: 6px 0; }
+  @keyframes star-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }
+  @keyframes tw { 0%, 100% { opacity: .1; } 50% { opacity: 1; } }
+  .rcell { cursor: pointer; border-radius: 12px; padding: 2px 0; transition: transform .15s; }
+  .rcell:hover { transform: translateY(-2px); }
+  .rcell.sel { outline: 2px solid var(--bs-primary); }
+  .rcell.perfect svg { filter: drop-shadow(0 0 7px rgba(251,191,36,.8)); }
+  .star { transform-origin: 100px 100px; animation: star-pulse 1.8s ease-in-out infinite; }
+  .tw { animation: tw 1.6s ease-in-out infinite; } .tw2 { animation-delay: .5s; } .tw3 { animation-delay: 1s; }
   .tl-chip { display: inline-flex; align-items: center; gap: 6px; font-size: .8rem; opacity: .85; }
   .tl-chip i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }"
 mk_theme <- function(nm) {
@@ -1697,18 +1705,18 @@ output$p_tl <- renderPlotly({
   cs <- unlist(lapply(seq_len(n), function(i) list(c((i - 1) / n, cols[i]), c(i / n, cols[i]))), recursive = FALSE)
   hh <- ((0:287) * 5) %/% 60; mi <- ((0:287) * 5) %% 60
   tx <- matrix(paste0(rep(format(T$days, "%a %d %b"), each = 288), "  ", sprintf("%02d:%02d", rep(hh, nd), rep(mi, nd)), "<br>", TLCODE[T$Z + 1]), 288, nd)
-  d0 <- as.character(T$days); dd <- format(T$days, "%d"); tt <- paste0(dd, "<br>", substr(format(T$days, "%a"), 1, 2))
+  d0 <- as.character(T$days); dd <- format(T$days, "%d"); pf <- T$days %in% perfect_days(); tt <- paste0(dd, "<br>", ifelse(pf, "<span style='color:#fbbf24'>\u2605</span>", substr(format(T$days, "%a"), 1, 2)))
   first <- which(dd == "01"); mk <- unique(c(1, first))
   shapes <- lapply(first[first > 1], function(i) list(type = "line", xref = "x", x0 = i - 1.5, x1 = i - 1.5, yref = "paper", y0 = 0, y1 = 1, line = list(color = th$fg, width = 1, dash = "dot")))
   ann <- lapply(mk, function(i) list(x = i - 1.4, y = 0, xref = "x", yref = "paper", xanchor = "left", yanchor = "top", yshift = -4, showarrow = FALSE,
                                      text = paste0("<b>", format(T$days[i], "%b %Y"), "</b>"), font = list(size = 11, color = th$fg)))
-  plot_ly(x = d0, y = (0:287) * 5 / 60 + 2.5 / 60, z = T$Z, type = "heatmap", zmin = -.5, zmax = n - .5, colorscale = cs, showscale = FALSE,
+  plot_ly(source = "tl", x = d0, y = (0:287) * 5 / 60 + 2.5 / 60, z = T$Z, type = "heatmap", zmin = -.5, zmax = n - .5, colorscale = cs, showscale = FALSE,
           xgap = 3, ygap = 0, text = tx, hoverinfo = "text") %>%
     plotly::layout(paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)", font = list(color = th$fg, size = 11), dragmode = FALSE,
                    margin = list(l = 0, r = 0, t = 46, b = 26), shapes = shapes, annotations = ann,
                    xaxis = list(type = "category", side = "top", tickmode = "array", tickvals = d0, ticktext = tt, tickfont = list(size = 10), showgrid = FALSE, ticks = "", fixedrange = TRUE),
                    yaxis = list(range = c(24, 0), showticklabels = FALSE, showgrid = FALSE, zeroline = FALSE, fixedrange = TRUE)) %>%
-    plotly::config(displayModeBar = FALSE)
+    plotly::config(displayModeBar = FALSE) %>% plotly::event_register("plotly_click")
 })
 output$p_tl_tot <- renderPlotly({       # daily totals behind the timeline (hidden in an accordion by default)
   th <- TH(); T <- TLM(); Z <- T$Z; cl <- tl_cols(input$theme == "Light"); hrs <- function(lo, hi) 5 * colSums(Z >= lo & Z <= hi) / 60
@@ -1748,21 +1756,6 @@ ring_svg2 <- function(f, cols, size = 230) {
                 if (fr > 0) sprintf('<circle cx="100" cy="100" r="%d" fill="none" stroke="%s" stroke-width="15" stroke-linecap="round" stroke-dasharray="%.1f %.1f" transform="rotate(-90 100 100)"/>', rs[i], cols[i], fr * c0, c0) else "") }
   HTML(sprintf('<svg viewBox="0 0 200 200" width="%d" height="%d">%s</svg>', size, size, out))
 }
-output$home_rings <- renderUI({             # one ring set per day; watches sync at night, so only complete days are shown
-  th <- TH(); d <- Dly(); n <- if (identical(input$ring_win, "Last 30 days")) 30 else 7
-  d <- d[!d$partial & d$day <= home_day(), ]; d <- tail(d, n); req(nrow(d) > 0); cols <- c(th$pal[3], th$pal[2], th$pal[5])
-  cell <- function(r) { f <- c(r$steps / input$goal, r$mem / input$act_goal, r$asleep_h / input$need)
-  div(class = "rcell", title = sprintf("%s: %s steps, %s active min, sleep %s", format(r$day, "%a %d %b"), fmt(r$steps), fmt(r$mem), hm(r$asleep_h)),
-      format(r$day, if (n <= 7) "%a" else "%d"), ring_svg2(f, cols, 74)) }
-  hit <- function(x, g) sum(!is.na(x) & x >= g)
-  leg <- function(col, txt) tags$div(tags$span(class = "rdot", style = paste0("background:", col)), tags$span(txt))
-  div(class = "d-flex flex-wrap gap-4 align-items-center p-2",
-      div(class = "rgrid", lapply(seq_len(nrow(d)), function(i) cell(d[i, ]))),
-      div(class = "rleg", tags$h6(sprintf("%s - %s", format(min(d$day), "%d %b"), format(max(d$day), "%d %b"))),
-          leg(cols[1], sprintf("steps goal reached on %d of %d days (average %s)", hit(d$steps, input$goal), nrow(d), fmt(mn(d$steps)))),
-          leg(cols[2], sprintf("active-minutes goal on %d of %d days (average %s min)", hit(d$mem, input$act_goal), nrow(d), fmt(mn(d$mem)))),
-          leg(cols[3], sprintf("sleep need met on %d of %d nights (average %s)", hit(d$asleep_h, input$need), nrow(d), hm(mn(d$asleep_h))))))
-})
 arc_svg <- function(frac, col, val, lab) {   # semicircle gauge like the Gadgetbridge app
   f <- if (is.na(frac)) 0 else min(max(frac, 0), .999); r <- 60; cx <- 80; cy <- 82
   pt <- function(a) sprintf("%.1f %.1f", cx - r * cos(a), cy - r * sin(a))
@@ -1770,11 +1763,6 @@ arc_svg <- function(frac, col, val, lab) {   # semicircle gauge like the Gadgetb
   HTML(sprintf('<svg viewBox="0 0 160 112" width="100%%" style="max-width:210px"><path d="M %s A %d %d 0 0 1 %s" fill="none" stroke="%s" stroke-opacity=".18" stroke-width="14" stroke-linecap="round"/>%s<text x="80" y="80" text-anchor="middle" font-size="22" font-weight="700" fill="currentColor">%s</text><text x="80" y="102" text-anchor="middle" font-size="11" fill="currentColor" opacity=".65">%s</text></svg>',
                pt(0), r, r, pt(pi), col, fg, val, lab))
 }
-output$arcs_day <- renderUI({
-  th <- TH(); r <- HOME()$r; rhr_v <- if (!is.na(r$rhr_w)) r$rhr_w else r$hr_p5
-  div(class = "arcs", arc_svg(r$steps / input$goal, th$pal[3], fmt(r$steps), "Steps"), arc_svg(r$mem / input$act_goal, th$pal[2], sprintf("%s min", fmt(r$mem)), "Active time"),
-      arc_svg(r$asleep_h / input$need, th$pal[5], hm(r$asleep_h), "Sleep"), arc_svg((rhr_v - 40) / 60, th$pal[4], fmt(rhr_v), "Resting HR"))
-})
 output$p_clock <- renderPlotly({            # the circular 24 h widget for the selected day
   th <- TH(); day <- home_day(); z <- build_Z(day)[, 1]; cl <- tl_cols(input$theme == "Light"); hh <- ((0:287) * 5) %/% 60; mi <- ((0:287) * 5) %% 60
   plot_ly(type = "barpolar", r = rep(1, 288), theta = (0:287) * 1.25 + .625, width = rep(1.25, 288), marker = list(color = cl[z + 1], line = list(width = 0)),
@@ -1880,6 +1868,58 @@ output$gb_tiles <- renderUI({
       tile("Metrics", "SpO2", if (nrow(spo)) fmt(mean(spo$spo)) else "-", "%", if (nrow(spo)) sprintf("lowest %s %%", fmt(min(spo$spo))) else "no readings", p[1], NULL),
       tile("Metrics", "Energy, estimated", fmt(bmr_est() + mn(d$kcal)), "kcal / day", sprintf("resting %s + active %s", fmt(bmr_est()), fmt(mn(d$kcal))), p[4], l14(d$kcal)),
       tile("Metrics", "VO2max, own estimate", fmt(vlast, 1), "ml/kg/min", "from your runs, not the watch", p[5], NULL))
+})
+perfect_days <- reactive({
+  d <- Dly(); ok <- !d$partial & !is.na(d$steps) & !is.na(d$mem) & !is.na(d$asleep_h) & d$steps >= input$goal & d$mem >= input$act_goal & d$asleep_h >= input$need
+  d$day[ok]
+})
+star_pts <- function(cx = 100, cy = 100, ro = 26, ri = 11) {
+  a <- seq(-pi / 2, by = pi / 5, length.out = 10); r <- rep(c(ro, ri), 5); paste(sprintf("%.1f,%.1f", cx + r * cos(a), cy + r * sin(a)), collapse = " ")
+}
+ring_svg3 <- function(f, cols, size = 74, perfect = FALSE) {
+  s <- as.character(ring_svg2(f, cols, size))
+  if (perfect) {
+    extra <- sprintf('<polygon class="star" points="%s" fill="#fbbf24" stroke="#f59e0b" stroke-width="2" stroke-linejoin="round"/><circle class="tw" cx="76" cy="76" r="3" fill="#fde68a"/><circle class="tw tw2" cx="126" cy="80" r="2.5" fill="#fde68a"/><circle class="tw tw3" cx="118" cy="128" r="3" fill="#fde68a"/>', star_pts())
+    s <- sub("</svg>", paste0(extra, "</svg>"), s, fixed = TRUE)
+  }
+  HTML(s)
+}
+output$home_rings <- renderUI({
+  th <- TH(); d <- Dly(); n <- if (identical(input$ring_win, "Last 30 days")) 30 else 7
+  d <- d[!d$partial & d$day <= home_day(), ]; d <- tail(d, n); req(nrow(d) > 0); cols <- c(th$pal[3], th$pal[2], th$pal[5])
+  fl <- function(r) c(r$steps / input$goal, r$mem / input$act_goal, r$asleep_h / input$need)
+  perfect <- vapply(seq_len(nrow(d)), function(i) { f <- fl(d[i, ]); all(!is.na(f) & f >= 1) }, logical(1))
+  streak <- 0; for (j in rev(seq_along(perfect))) { if (perfect[j]) streak <- streak + 1 else break }
+  cell <- function(i) { r <- d[i, ]
+  div(class = paste("rcell", if (perfect[i]) "perfect", if (r$day == home_day()) "sel"),
+      title = sprintf("%s: %s steps, %s active min, sleep %s%s - click to show this day", format(r$day, "%a %d %b"), fmt(r$steps), fmt(r$mem), hm(r$asleep_h), if (perfect[i]) " - all rings closed!" else ""),
+      onclick = sprintf("Shiny.setInputValue('ring_day','%s',{priority:'event'})", format(r$day)),
+      format(r$day, if (n <= 7) "%a" else "%d"), ring_svg3(fl(r), cols, 74, perfect[i])) }
+  hit <- function(x, g) sum(!is.na(x) & x >= g)
+  leg <- function(col, txt) tags$div(tags$span(class = "rdot", style = paste0("background:", col)), tags$span(txt))
+  div(class = "d-flex flex-wrap gap-4 align-items-center p-2",
+      div(class = "rgrid", lapply(seq_len(nrow(d)), cell)),
+      div(class = "rleg", tags$h6(sprintf("%s - %s", format(min(d$day), "%d %b"), format(max(d$day), "%d %b"))),
+          leg(cols[1], sprintf("steps goal reached on %d of %d days (average %s)", hit(d$steps, input$goal), nrow(d), fmt(mn(d$steps)))),
+          leg(cols[2], sprintf("active-minutes goal on %d of %d days (average %s min)", hit(d$mem, input$act_goal), nrow(d), fmt(mn(d$mem)))),
+          leg(cols[3], sprintf("sleep need met on %d of %d nights (average %s)", hit(d$asleep_h, input$need), nrow(d), hm(mn(d$asleep_h)))),
+          if (any(perfect)) tags$div(class = "mt-2", tags$b(sprintf("\u2605 %d perfect day%s - all three rings closed", sum(perfect), if (sum(perfect) == 1) "" else "s")),
+                                     if (streak >= 2) tags$span(sprintf("  |  current streak: %d%s", streak, if (streak >= 3) " \U0001F525" else ""))) else NULL))
+})
+observeEvent(input$ring_day, { d <- tryCatch(as.Date(input$ring_day), error = function(e) NA); if (!is.na(d)) updateDateInput(session, "home_day", value = d) })
+observeEvent(event_data("plotly_click", source = "tl"), {
+  cl <- event_data("plotly_click", source = "tl"); d <- tryCatch(as.Date(as.character(cl$x[1])), error = function(e) NA)
+  if (!is.na(d)) { updateDateInput(session, "home_day", value = d)
+    showNotification(sprintf("Showing %s: the tiles, heart rate and sleep on the Today tab now follow this day.", format(d, "%A %d %B")), duration = 4, type = "message") }
+})
+output$arcs_day <- renderUI({
+  th <- TH(); r <- HOME()$r; rhr_v <- if (!is.na(r$rhr_w)) r$rhr_w else r$hr_p5
+  go <- function(tab, x) div(style = "cursor:pointer;width:100%;display:flex;justify-content:center", title = paste("open:", tab),
+                             onclick = sprintf("Shiny.setInputValue('goto','%s',{priority:'event'})", tab), x)
+  div(class = "arcs", go("Metrics", arc_svg(r$steps / input$goal, th$pal[3], fmt(r$steps), "Steps")),
+      go("Metrics", arc_svg(r$mem / input$act_goal, th$pal[2], sprintf("%s min", fmt(r$mem)), "Active time")),
+      go("Sleep", arc_svg(r$asleep_h / input$need, th$pal[5], hm(r$asleep_h), "Sleep")),
+      go("Heart", arc_svg((rhr_v - 40) / 60, th$pal[4], fmt(rhr_v), "Resting HR")))
 })
 
   # ================= DASHBOARD ======================================================
